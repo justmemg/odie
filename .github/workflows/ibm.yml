@@ -1,0 +1,208 @@
+# This workflow will build a docker container, publish it to IBM Container Registry, and deploy it to IKS when a release is created
+#
+# To configure this workflow:
+#
+# 1. Ensure that your repository contains a Dockerfile
+# 2. Setup secrets in your repository by going to settings: Create ICR_NAMESPACE and IBM_CLOUD_API_KEY
+# 3. Change the values for the IBM_CLOUD_REGION, REGISTRY_HOSTNAME, IMAGE_NAME, IKS_CLUSTER, DEPLOYMENT_NAME, and PORT
+
+name: Build and Deploy to IKS
+
+on:
+  release:
+    types: [created]
+
+# Environment variables available to all jobs and steps in this workflow
+env:
+  GITHUB_SHA: ${{ github.sha }}
+  IBM_CLOUD_API_KEY: ${{ secrets.IBM_CLOUD_API_KEY }}
+  IBM_CLOUD_REGION: us-south
+  ICR_NAMESPACE: ${{ secrets.ICR_NAMESPACE }}
+  REGISTRY_HOSTNAME: us.icr.io
+  IMAGE_NAME: iks-test
+  IKS_CLUSTER: example-iks-cluster-name-or-id
+  DEPLOYMENT_NAME: iks-test
+  PORT: 5001
+
+jobs:
+  setup-build-publish-deploy:
+    name: Setup, Build, Publish, and Deploy
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+
+    - name: Checkout
+      uses: actions/checkout@v2
+
+    # Download and Install IBM Cloud CLI
+    - name: Install IBM Cloud CLI
+      run: |
+        curl -fsSL https://clis.cloud.ibm.com/install/linux | sh
+        ibmcloud --version
+        ibmcloud config --check-version=false
+        ibmcloud plugin install -f kubernetes-service
+        ibmcloud plugin install -f container-registry
+
+    # Authenticate with IBM Cloud CLI
+    - name: Authenticate with IBM Cloud CLI
+      run: |
+        ibmcloud login --apikey "${IBM_CLOUD_API_KEY}" -r "${IBM_CLOUD_REGION}" -g default
+        ibmcloud cr region-set "${IBM_CLOUD_REGION}"
+        ibmcloud cr login
+
+    # Build the Docker image
+    - name: Build with Docker
+      run: |
+        docker build -t "$REGISTRY_HOSTNAME"/"$ICR_NAMESPACE"/"$IMAGE_NAME":"$GITHUB_SHA" \
+          --build-arg GITHUB_SHA="$GITHUB_SHA" \
+          --build-arg GITHUB_REF="$GITHUB_REF" .
+
+    # Push the image to IBM Container Registry
+    - name: Push the image to ICR
+      run: |
+        docker push $REGISTRY_HOSTNAME/$ICR_NAMESPACE/$IMAGE_NAME:$GITHUB_SHA
+
+    # Deploy the Docker image to the IKS cluster
+    - name: Deploy to IKS
+      run: |
+        ibmcloud ks cluster config --cluster $IKS_CLUSTER
+        kubectl config current-context
+        kubectl create deployment $DEPLOYMENT_NAME --image=$REGISTRY_HOSTNAME/$ICR_NAMESPACE/$IMAGE_NAME:$GITHUB_SHA --dry-run -o yaml > deployment.yaml
+        kubectl apply -f deployment.yaml
+        kubectl rollout status deployment/$DEPLOYMENT_NAME
+        kubectl create service loadbalancer $DEPLOYMENT_NAME --tcp=80:$PORT --dry-run -o yaml > service.yaml
+        kubectl apply -f service.yaml
+        kubectl get services -o wide
+- name: Close Stale Issues
+  uses: actions/stale@v3.0.19
+  with:
+    # Token for the repository. Can be passed in using `{{ secrets.GITHUB_TOKEN }}`.
+    repo-token: # optional, default is ${{ github.token }}
+    # The message to post on the issue when tagging it. If none provided, will not mark issues stale.
+    stale-issue-message: # optional
+    # The message to post on the pull request when tagging it. If none provided, will not mark pull requests stale.
+    stale-pr-message: # optional
+    # The message to post on the issue when closing it. If none provided, will not comment when closing an issue.
+    close-issue-message: # optional
+    # The message to post on the pull request when closing it. If none provided, will not comment when closing a pull requests.
+    close-pr-message: # optional
+    # The number of days old an issue or a pull request can be before marking it stale. Set to -1 to never mark issues or pull requests as stale automatically.
+    days-before-stale: # optional, default is 60
+    # The number of days old an issue can be before marking it stale. Set to -1 to never mark issues as stale automatically. Override "days-before-stale" option regarding only the issues.
+    days-before-issue-stale: # optional
+    # The number of days old a pull request can be before marking it stale. Set to -1 to never mark pull requests as stale automatically. Override "days-before-stale" option regarding only the pull requests.
+    days-before-pr-stale: # optional
+    # The number of days to wait to close an issue or a pull request after it being marked stale. Set to -1 to never close stale issues or pull requests.
+    days-before-close: # optional, default is 7
+    # The number of days to wait to close an issue after it being marked stale. Set to -1 to never close stale issues. Override "days-before-close" option regarding only the issues.
+    days-before-issue-close: # optional
+    # The number of days to wait to close a pull request after it being marked stale. Set to -1 to never close stale pull requests. Override "days-before-close" option regarding only the pull requests.
+    days-before-pr-close: # optional
+    # The label to apply when an issue is stale.
+    stale-issue-label: # optional, default is Stale
+    # The label to apply when an issue is closed.
+    close-issue-label: # optional
+    # The labels that mean an issue is exempt from being marked stale. Separate multiple labels with commas (eg. "label1,label2").
+    exempt-issue-labels: # optional, default is 
+    # The label to apply when a pull request is stale.
+    stale-pr-label: # optional, default is Stale
+    # The label to apply when a pull request is closed.
+    close-pr-label: # optional
+    # The labels that mean a pull request is exempt from being marked as stale. Separate multiple labels with commas (eg. "label1,label2").
+    exempt-pr-labels: # optional, default is 
+    # The milestones that mean an issue or a pull request is exempt from being marked as stale. Separate multiple milestones with commas (eg. "milestone1,milestone2").
+    exempt-milestones: # optional, default is 
+    # The milestones that mean an issue is exempt from being marked as stale. Separate multiple milestones with commas (eg. "milestone1,milestone2"). Override "exempt-milestones" option regarding only the issues.
+    exempt-issue-milestones: # optional, default is 
+    # The milestones that mean a pull request is exempt from being marked as stale. Separate multiple milestones with commas (eg. "milestone1,milestone2"). Override "exempt-milestones" option regarding only the pull requests.
+    exempt-pr-milestones: # optional, default is 
+    # Exempt all issues and pull requests with milestones from being marked as stale. Default to false.
+    exempt-all-milestones: # optional, default is false
+    # Exempt all issues with milestones from being marked as stale. Override "exempt-all-milestones" option regarding only the issues.
+    exempt-all-issue-milestones: # optional, default is 
+    # Exempt all pull requests with milestones from being marked as stale. Override "exempt-all-milestones" option regarding only the pull requests.
+    exempt-all-pr-milestones: # optional, default is 
+    # Only issues or pull requests with all of these labels are checked if stale. Defaults to `` (disabled) and can be a comma-separated list of labels.
+    only-labels: # optional, default is 
+    # Only issues or pull requests with at least one of these labels are checked if stale. Defaults to `` (disabled) and can be a comma-separated list of labels.
+    any-of-labels: # optional, default is 
+    # Only issues with at least one of these labels are checked if stale. Defaults to `` (disabled) and can be a comma-separated list of labels. Override "any-of-labels" option regarding only the issues.
+    any-of-issue-labels: # optional, default is 
+    # Only pull requests with at least one of these labels are checked if stale. Defaults to `` (disabled) and can be a comma-separated list of labels. Override "any-of-labels" option regarding only the pull requests.
+    any-of-pr-labels: # optional, default is 
+    # Only issues with all of these labels are checked if stale. Defaults to `[]` (disabled) and can be a comma-separated list of labels. Override "only-labels" option regarding only the issues.
+    only-issue-labels: # optional, default is 
+    # Only pull requests with all of these labels are checked if stale. Defaults to `[]` (disabled) and can be a comma-separated list of labels. Override "only-labels" option regarding only the pull requests.
+    only-pr-labels: # optional, default is 
+    # The maximum number of operations per run, used to control rate limiting (GitHub API CRUD related).
+    operations-per-run: # optional, default is 30
+    # Remove stale labels from issues and pull requests when they are updated or commented on.
+    remove-stale-when-updated: # optional, default is true
+    # Remove stale labels from issues when they are updated or commented on. Override "remove-stale-when-updated" option regarding only the issues.
+    remove-issue-stale-when-updated: # optional, default is true
+    # Remove stale labels from pull requests when they are updated or commented on. Override "remove-stale-when-updated" option regarding only the pull requests.
+    remove-pr-stale-when-updated: # optional, default is true
+    # Run the processor in debug mode without actually performing any operations on live issues.
+    debug-only: # optional, default is false
+    # The order to get issues or pull requests. Defaults to false, which is descending.
+    ascending: # optional, default is false
+    # Skip adding stale message when marking a pull request as stale.
+    skip-stale-pr-message: # optional, default is false
+    # Skip adding stale message when marking an issue as stale.
+    skip-stale-issue-message: # optional, default is false
+    # Delete the git branch after closing a stale pull request.
+    delete-branch: # optional, default is false
+    # The date used to skip the stale action on issue/pull request created before it (ISO 8601 or RFC 2822).
+    start-date: # optional, default is 
+    # The assignees which exempt an issue or a pull request from being marked as stale. Separate multiple assignees with commas (eg. "user1,user2").
+    exempt-assignees: # optional, default is 
+    # The assignees which exempt an issue from being marked as stale. Separate multiple assignees with commas (eg. "user1,user2"). Override "exempt-assignees" option regarding only the issues.
+    exempt-issue-assignees: # optional, default is 
+    # The assignees which exempt a pull request from being marked as stale. Separate multiple assignees with commas (eg. "user1,user2"). Override "exempt-assignees" option regarding only the pull requests.
+    exempt-pr-assignees: # optional, default is 
+    # Exempt all issues and pull requests with assignees from being marked as stale. Default to false.
+    exempt-all-assignees: # optional, default is false
+    # Exempt all issues with assignees from being marked as stale. Override "exempt-all-assignees" option regarding only the issues.
+    exempt-all-issue-assignees: # optional, default is 
+    # Exempt all pull requests with assignees from being marked as stale. Override "exempt-all-assignees" option regarding only the pull requests.
+    exempt-all-pr-assignees: # optional, default is 
+    # Display some statistics at the end regarding the stale workflow (only when the logs are enabled).
+    enable-statistics: # optional, default is true
+    - name: Deploy Environment
+  # You may pin to the exact commit or the version.
+  # uses: parasoft/deploy-environment-action@486e9382c6c2958fcbaad60b895da799d16730c2
+  uses: parasoft/deploy-environment-action@1.0.2
+  with:
+    # CTP URL
+    ctpUrl: 
+    # CTP Username
+    ctpUsername: 
+    # CTP Password
+    ctpPassword: 
+    # Name of the system
+    system: 
+    # Name of the environment
+    environment: 
+    # Name of the environment instance to provision
+    instance: 
+    # Fail action and abort on provisioning failure
+    abortOnFailure: # optional
+    # Virtual assets in the environment will be replicated on another server
+    copyToVirtualize: # optional
+    # The environment assets will be copied to a Virtualize server matching this name
+    virtServerName: # optional
+    # The name for the replicated environment can be used to later destroy the environment
+    newEnvironmentName: # optional
+    # Duplicate associated data repositories before provisioning
+    duplicateDataRepo: # optional
+    # Where to duplicate data repository
+    duplicateType: # optional
+    # The host of the data repository server
+    repoHost: # optional
+    # The port of the data repository server
+    repoPort: # optional
+    # The username of the data repository server
+    repoUsername: # optional
+    # The password of the data repository server
+    repoPassword: # optional
+    
